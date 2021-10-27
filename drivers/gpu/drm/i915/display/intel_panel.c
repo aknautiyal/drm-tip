@@ -265,6 +265,9 @@ static int pch_panel_fitting(struct intel_crtc_state *crtc_state,
 		return -EINVAL;
 	}
 
+	if (crtc_state->bigjoiner)
+		width = width / 2;
+
 	drm_rect_init(&crtc_state->pch_pfit.dst,
 		      x, y, width, height);
 	crtc_state->pch_pfit.enabled = true;
