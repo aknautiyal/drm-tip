@@ -781,23 +781,71 @@ static u8 intel_dp_dsc_get_slice_count(struct intel_dp *intel_dp,
 	return 0;
 }
 
-static enum intel_output_format
+static void
 intel_dp_output_format(struct intel_connector *connector,
-		       bool ycbcr_420_output)
+		       bool ycbcr_420_output,
+		       enum intel_output_format *output_format,
+		       enum intel_output_format *sink_format)
 {
 	struct intel_dp *intel_dp = intel_attached_dp(connector);
+	struct drm_i915_private *i915 = dp_to_i915(intel_dp);
+	bool ycbcr_420_passthrough, ycbcr_444_to_420, rgb_to_ycbcr;
 
-	if (!connector->base.ycbcr_420_allowed || !ycbcr_420_output)
-		return INTEL_OUTPUT_FORMAT_RGB;
+	if (!connector->base.ycbcr_420_allowed || !ycbcr_420_output) {
+		*output_format = INTEL_OUTPUT_FORMAT_RGB;
+		if (sink_format)
+			*sink_format = INTEL_OUTPUT_FORMAT_RGB;
+		return;
+	}
 
-	if (intel_dp->dfp.rgb_to_ycbcr &&
-	    intel_dp->dfp.ycbcr_444_to_420)
-		return INTEL_OUTPUT_FORMAT_RGB;
+	rgb_to_ycbcr = intel_dp->dfp.rgb_to_ycbcr;
+	ycbcr_444_to_420 = intel_dp->dfp.ycbcr_444_to_420;
+	ycbcr_420_passthrough = intel_dp->dfp.ycbcr_420_passthrough;
+	/* With Sink format YCBCR420, try with different DFP configurations */
+	if (sink_format)
+		*sink_format = INTEL_OUTPUT_FORMAT_YCBCR420;
 
-	if (intel_dp->dfp.ycbcr_444_to_420)
-		return INTEL_OUTPUT_FORMAT_YCBCR444;
-	else
-		return INTEL_OUTPUT_FORMAT_YCBCR420;
+	if (DISPLAY_VER(i915) >= 11) {
+		bool dsc = drm_dp_sink_supports_dsc(intel_dp->dsc_dpcd);
+		/*
+		 * If DFP supports DSC, we might go with DSC for GEN >11
+		 * Currently our source supports DSC1.1, it cannot output
+		 * compressed YCBCR420. Two ways to go:
+		 * 1. Source send Compressed RGB and asks DFP to
+		 * convert RGB->YCBCR444 and then YCbCr444->YCbCr420.
+		 * 2. Source converts RGB->YCbCr444 and sends
+		 * compressed YCbCr444, and asks DFP to convert 444->420
+		 */
+
+		/* Let DFP convert from RGB->YCbCr if possible */
+		if (dsc && rgb_to_ycbcr && ycbcr_444_to_420) {
+			*output_format = INTEL_OUTPUT_FORMAT_RGB;
+
+			return;
+		}
+		/* Source converts RGB>YCBCR444 DFP converts 444->420 if possible */
+		if (dsc && ycbcr_444_to_420) {
+			*output_format = INTEL_OUTPUT_FORMAT_YCBCR444;
+
+			return;
+		}
+
+		if (ycbcr_420_passthrough) {
+			*output_format = INTEL_OUTPUT_FORMAT_YCBCR420;
+
+			return;
+		}
+	}
+
+	/* 4:4:4->4:2:0 conversion is the only way */
+	if (ycbcr_444_to_420) {
+		*output_format = INTEL_OUTPUT_FORMAT_YCBCR444;
+
+		return;
+	}
+
+	/* #TODO Cannot support YCBCR420, fall back to RGB ??*/
+	*output_format = INTEL_OUTPUT_FORMAT_YCBCR420;
 }
 
 int intel_dp_min_bpp(enum intel_output_format output_format)
@@ -826,8 +874,12 @@ intel_dp_mode_min_output_bpp(struct intel_connector *connector,
 			     const struct drm_display_mode *mode)
 {
 	const struct drm_display_info *info = &connector->base.display_info;
-	enum intel_output_format output_format =
-		intel_dp_output_format(connector, drm_mode_is_420_only(info, mode));
+	enum intel_output_format output_format;
+
+	intel_dp_output_format(connector,
+			       drm_mode_is_420_only(info, mode),
+			       &output_format,
+			       NULL);
 
 	return intel_dp_output_bpp(output_format, intel_dp_min_bpp(output_format));
 }
@@ -1175,10 +1227,7 @@ static bool intel_dp_supports_dsc(struct intel_dp *intel_dp,
 static bool intel_dp_is_ycbcr420(struct intel_dp *intel_dp,
 				 const struct intel_crtc_state *crtc_state)
 {
-	/* FIXME see intel_dp_update_420() regarding rgb_to_ycbcr */
-	return crtc_state->output_format == INTEL_OUTPUT_FORMAT_YCBCR420 ||
-		(crtc_state->output_format == INTEL_OUTPUT_FORMAT_YCBCR444 &&
-		 intel_dp->dfp.ycbcr_444_to_420);
+	return (crtc_state->sink_format == INTEL_OUTPUT_FORMAT_YCBCR420);
 }
 
 static int intel_dp_hdmi_compute_bpc(struct intel_dp *intel_dp,
@@ -1858,6 +1907,22 @@ static bool intel_dp_has_audio(struct intel_encoder *encoder,
 		return intel_conn_state->force_audio == HDMI_AUDIO_ON;
 }
 
+static void
+intel_dp_compute_dfp_format(struct intel_crtc_state *crtc_state)
+{
+	if (crtc_state->sink_format != INTEL_OUTPUT_FORMAT_YCBCR420)
+		return;
+
+	if (crtc_state->output_format == INTEL_OUTPUT_FORMAT_YCBCR420) {
+		crtc_state->dp_dfp.ycbcr420_passthrough = true;
+	} else if  (crtc_state->output_format == INTEL_OUTPUT_FORMAT_YCBCR444) {
+		crtc_state->dp_dfp.ycbcr444_to_420 = true;
+	} else {
+		crtc_state->dp_dfp.ycbcr444_to_420 = true;
+		crtc_state->dp_dfp.rgb_to_ycbcr = true;
+	}
+}
+
 static int
 intel_dp_compute_output_format(struct intel_encoder *encoder,
 			       struct intel_crtc_state *crtc_state,
@@ -1874,7 +1939,11 @@ intel_dp_compute_output_format(struct intel_encoder *encoder,
 
 	ycbcr_420_only = drm_mode_is_420_only(info, adjusted_mode);
 
-	crtc_state->output_format = intel_dp_output_format(connector, ycbcr_420_only);
+	intel_dp_output_format(connector, ycbcr_420_only,
+			       &crtc_state->output_format,
+			       &crtc_state->sink_format);
+
+	intel_dp_compute_dfp_format(crtc_state);
 
 	if (ycbcr_420_only && !intel_dp_is_ycbcr420(intel_dp, crtc_state)) {
 		drm_dbg_kms(&i915->drm,
@@ -1890,7 +1959,10 @@ intel_dp_compute_output_format(struct intel_encoder *encoder,
 		    !drm_mode_is_420_also(info, adjusted_mode))
 			return ret;
 
-		crtc_state->output_format = intel_dp_output_format(connector, true);
+		intel_dp_output_format(connector, true,
+				       &crtc_state->output_format,
+				       &crtc_state->sink_format);
+		intel_dp_compute_dfp_format(crtc_state);
 		ret = intel_dp_compute_link_config(encoder, crtc_state, conn_state,
 						   respect_downstream_limits);
 	}
@@ -4313,7 +4385,6 @@ intel_dp_update_420(struct intel_dp *intel_dp)
 {
 	struct drm_i915_private *i915 = dp_to_i915(intel_dp);
 	struct intel_connector *connector = intel_dp->attached_connector;
-	bool is_branch, ycbcr_420_passthrough, ycbcr_444_to_420, rgb_to_ycbcr;
 
 	/* No YCbCr output support on gmch platforms */
 	if (HAS_GMCH(i915))
@@ -4326,47 +4397,27 @@ intel_dp_update_420(struct intel_dp *intel_dp)
 	if (IS_IRONLAKE(i915))
 		return;
 
-	is_branch = drm_dp_is_branch(intel_dp->dpcd);
-	ycbcr_420_passthrough =
+	if (!drm_dp_is_branch(intel_dp->dpcd)) {
+		connector->base.ycbcr_420_allowed = true;
+		return;
+	}
+
+	intel_dp->dfp.ycbcr_420_passthrough =
 		drm_dp_downstream_420_passthrough(intel_dp->dpcd,
 						  intel_dp->downstream_ports);
 	/* on-board LSPCON always assumed to support 4:4:4->4:2:0 conversion */
-	ycbcr_444_to_420 =
+	intel_dp->dfp.ycbcr_444_to_420 =
 		dp_to_dig_port(intel_dp)->lspcon.active ||
 		drm_dp_downstream_444_to_420_conversion(intel_dp->dpcd,
 							intel_dp->downstream_ports);
-	rgb_to_ycbcr = drm_dp_downstream_rgb_to_ycbcr_conversion(intel_dp->dpcd,
-								 intel_dp->downstream_ports,
-								 DP_DS_HDMI_BT709_RGB_YCBCR_CONV);
-	/*
-	 * FIXME need to actually track whether we're really
-	 * going to be doing the RGB->YCbCr connversion or not.
-	 * We can't tell by simply looking at intel_dp->dfp.rgb_to_ycbcr.
-	 * Readout is going to annoying due to having to read that
-	 * state from external hardware that may vanish at any time :(
-	 */
-	rgb_to_ycbcr = false;
+	intel_dp->dfp.rgb_to_ycbcr =
+		drm_dp_downstream_rgb_to_ycbcr_conversion(intel_dp->dpcd,
+							  intel_dp->downstream_ports,
+							  DP_DS_HDMI_BT709_RGB_YCBCR_CONV);
 
-	if (DISPLAY_VER(i915) >= 11) {
-		/* Let PCON convert from RGB->YCbCr if possible */
-		if (is_branch && rgb_to_ycbcr && ycbcr_444_to_420) {
-			intel_dp->dfp.rgb_to_ycbcr = true;
-			intel_dp->dfp.ycbcr_444_to_420 = true;
-			connector->base.ycbcr_420_allowed = true;
-		} else {
-		/* Prefer 4:2:0 passthrough over 4:4:4->4:2:0 conversion */
-			intel_dp->dfp.ycbcr_444_to_420 =
-				ycbcr_444_to_420 && !ycbcr_420_passthrough;
-
-			connector->base.ycbcr_420_allowed =
-				!is_branch || ycbcr_444_to_420 || ycbcr_420_passthrough;
-		}
-	} else {
-		/* 4:4:4->4:2:0 conversion is the only way */
-		intel_dp->dfp.ycbcr_444_to_420 = ycbcr_444_to_420;
-
-		connector->base.ycbcr_420_allowed = ycbcr_444_to_420;
-	}
+	if (intel_dp->dfp.ycbcr_420_passthrough ||
+	    intel_dp->dfp.ycbcr_444_to_420)
+		connector->base.ycbcr_420_allowed = true;
 
 	drm_dbg_kms(&i915->drm,
 		    "[CONNECTOR:%d:%s] RGB->YcbCr conversion? %s, YCbCr 4:2:0 allowed? %s, YCbCr 4:4:4->4:2:0 conversion? %s\n",

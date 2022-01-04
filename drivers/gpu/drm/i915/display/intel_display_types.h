@@ -1183,6 +1183,9 @@ struct intel_crtc_state {
 	/* Output format RGB/YCBCR etc */
 	enum intel_output_format output_format;
 
+	/* Output format for sink RGB/YCBCR etc */
+	enum intel_output_format sink_format;
+
 	/* enable pipe gamma? */
 	bool gamma_enable;
 
@@ -1241,6 +1244,13 @@ struct intel_crtc_state {
 		u8 link_count;
 		u8 pixel_overlap;
 	} splitter;
+
+	/* DP DFP color configuration */
+	struct {
+		bool rgb_to_ycbcr;
+		bool ycbcr444_to_420;
+		bool ycbcr420_passthrough;
+	} dp_dfp;
 };
 
 enum intel_pipe_crc_source {
@@ -1625,6 +1635,7 @@ struct intel_dp {
 		int pcon_max_frl_bw;
 		u8 max_bpc;
 		bool ycbcr_444_to_420;
+		bool ycbcr_420_passthrough;
 		bool rgb_to_ycbcr;
 	} dfp;
 
