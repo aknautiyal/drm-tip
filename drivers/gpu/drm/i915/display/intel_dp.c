@@ -1707,7 +1707,6 @@ static int dsc_compute_link_config(struct intel_dp *intel_dp,
 	return -EINVAL;
 }
 
-static
 u16 intel_dp_dsc_max_sink_compressed_bppx16(struct intel_dp *intel_dp,
 					    struct intel_crtc_state *pipe_config,
 					    int bpc)
@@ -1734,7 +1733,7 @@ u16 intel_dp_dsc_max_sink_compressed_bppx16(struct intel_dp *intel_dp,
 	return 0;
 }
 
-static u16 intel_dp_dsc_min_compressed_bppx16(struct intel_crtc_state *pipe_config)
+u16 intel_dp_dsc_min_compressed_bppx16(struct intel_crtc_state *pipe_config)
 {
 	switch (pipe_config->output_format) {
 	case INTEL_OUTPUT_FORMAT_RGB:
