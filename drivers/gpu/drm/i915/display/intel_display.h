@@ -34,6 +34,7 @@ struct drm_atomic_state;
 struct drm_device;
 struct drm_display_mode;
 struct drm_encoder;
+struct drm_file;
 struct drm_modeset_acquire_ctx;
 struct intel_atomic_state;
 struct intel_crtc;
@@ -559,5 +560,7 @@ bool assert_port_valid(struct intel_display *display, enum port port);
 
 bool intel_scanout_needs_vtd_wa(struct intel_display *display);
 int intel_crtc_num_joined_pipes(const struct intel_crtc_state *crtc_state);
+
+int i915_get_available_crtc_ioctl(struct drm_device *dev, void *data, struct drm_file *file_priv);
 
 #endif

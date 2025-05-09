@@ -8267,3 +8267,96 @@ bool intel_scanout_needs_vtd_wa(struct intel_display *display)
 
 	return IS_DISPLAY_VER(display, 6, 11) && i915_vtd_active(i915);
 }
+
+static
+bool has_joiner_mode(struct intel_display *display, struct drm_connector *connector)
+{
+	struct drm_display_mode *mode;
+
+	/* go through current modes checking for the joiner mode */
+	list_for_each_entry(mode, &connector->modes, head) {
+		if (mode->hdisplay > 5120) {
+			drm_dbg_kms(display->drm, "Connector has joiner mode\n");
+			return true;
+		}
+	}
+
+	return false;
+}
+
+static
+struct drm_crtc *get_crtc_for_connector_with_joiner(struct drm_device *drm)
+{
+	struct intel_display *display = to_intel_display(drm);
+	struct drm_crtc *crtc, *next_crtc = NULL, *available_crtc = NULL;
+
+	drm_for_each_crtc_reverse(crtc, drm) {
+		drm_dbg_kms(display->drm, "Trying crtc id = %d\n", crtc->base.id);
+		if (crtc->enabled) {
+			next_crtc = NULL;
+			continue;
+		}
+
+		if (next_crtc) {
+			available_crtc = crtc;
+			break;
+		}
+		next_crtc = crtc;
+	}
+	return available_crtc;
+}
+
+static
+struct drm_crtc *get_crtc_for_connector(struct drm_device *drm)
+{
+	struct intel_display *display = to_intel_display(drm);
+	struct drm_crtc *crtc, *available_crtc = NULL;
+
+	drm_for_each_crtc(crtc, drm) {
+		drm_dbg_kms(display->drm, "Trying crtc id = %d\n", crtc->base.id);
+		if (crtc->enabled)
+			continue;
+
+		available_crtc = crtc;
+		break;
+	}
+	return available_crtc;
+}
+
+int i915_get_available_crtc_ioctl(struct drm_device *drm, void *data, struct drm_file *file_priv)
+{
+	struct intel_display *display = to_intel_display(drm);
+	uint32_t connector_id = *(uint32_t *)data;
+	struct drm_connector *connector;
+	bool connector_needs_joiner;
+	struct drm_crtc *available_crtc = NULL;
+	int ret_crtc_id = -1;
+
+	connector = drm_connector_lookup(drm, file_priv, connector_id);
+
+	if (!connector) {
+		drm_dbg_kms(display->drm, "No connector with id: %d\n", connector_id);
+		return -ENOENT;
+	}
+
+	connector_needs_joiner = has_joiner_mode(display, connector);
+
+	if (connector_needs_joiner)
+		available_crtc = get_crtc_for_connector_with_joiner(drm);
+	else
+		available_crtc = get_crtc_for_connector(drm);
+
+	if (available_crtc) {
+		drm_dbg_kms(display->drm, "For Connector:%d:%s suitable CRTC:%d:%s\n",
+			    connector->base.id, connector->name,
+			    available_crtc->base.id, available_crtc->name);
+		ret_crtc_id = available_crtc->base.id;
+	} else {
+		drm_dbg_kms(display->drm, "For Connector:%d:%s Couldnt get a suitable crtc\n",
+			    connector->base.id, connector->name);
+	}
+
+	drm_connector_put(connector);
+
+	return ret_crtc_id;
+}
