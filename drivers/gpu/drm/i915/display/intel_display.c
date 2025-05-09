@@ -8267,3 +8267,32 @@ bool intel_scanout_needs_vtd_wa(struct intel_display *display)
 
 	return IS_DISPLAY_VER(display, 6, 11) && i915_vtd_active(i915);
 }
+
+int i915_get_available_crtc_ioctl(struct drm_device *drm, void *data, struct drm_file *file_priv) {
+	struct intel_display *display = to_intel_display(drm);
+	uint32_t connector_id = *(uint32_t *)data;
+	struct drm_connector *connector;
+	struct drm_crtc *crtc;
+	int available_crtc = -1;
+
+	connector = drm_connector_lookup(drm, file_priv, connector_id);
+	if (!connector) {
+		drm_dbg_kms(display->drm, "No connector with id: %d\n", connector_id);
+		return -ENOENT;
+	}
+
+	drm_for_each_crtc(crtc, drm) {
+		drm_dbg_kms(display->drm, "Trying crtc id = %d\n", crtc->base.id);
+		if (crtc->enabled)
+			continue;
+		available_crtc = crtc->base.id;
+		drm_dbg_kms(display->drm, "For Connector:%d:%s suitable CRTC:%d:%s\n",
+			    connector->base.id, connector->name,
+			    crtc->base.id, crtc->name);
+		break;
+	}
+
+	drm_connector_put(connector);
+
+	return available_crtc;
+}
